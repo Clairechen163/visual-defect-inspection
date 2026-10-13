@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: Accuracy on a fresh synthetic set
+        run: |
+          defect-inspect generate --n 100 --seed 2024 --out data/ci
+          defect-inspect evaluate data/ci --out eval.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-report
+          path: eval.json
