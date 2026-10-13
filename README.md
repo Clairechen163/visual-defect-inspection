@@ -19,7 +19,7 @@ It is classical computer vision (OpenCV + NumPy): no GPU, no training data requi
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/visual-defect-inspection.git
+git clone https://github.com/Clairechen163/visual-defect-inspection.git
 cd visual-defect-inspection
 pip install -e ".[dev]"
 
