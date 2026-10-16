@@ -65,9 +65,18 @@ def _bbox(m):
     return [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)]
 
 
-def generate_sample(rng: np.random.Generator, defects: list[str]):
+def generate_sample(rng: np.random.Generator, defects: list[str], intensity: float = 1.0,
+                    n_nuisance: int = 0, return_nuisances: bool = False):
     """Render one image. Returns (bgr_image, labels) with labels as
-    [{"type": ..., "bbox": [x, y, w, h]}, ...]."""
+    [{"type": ..., "bbox": [x, y, w, h]}, ...].
+
+    `intensity` (0-1] scales how visible the defects are: 1.0 = clear,
+    ~0.3 = faint scratches, pale stains and small chips (hard cases).
+
+    `n_nuisance` adds harmless look-alikes that are NOT defects: dust specks,
+    specular glare and short tool marks. They are the hard negatives a real
+    line produces, and the reason an ML verifier is useful. With
+    `return_nuisances=True` their boxes are returned as a third value."""
     part_mask, shape = _make_part(rng)
     labels = []
 
@@ -98,7 +107,7 @@ def generate_sample(rng: np.random.Generator, defects: list[str]):
         lbl_mask = blob.copy()
         soft = cv2.GaussianBlur(blob.astype(np.float32) / 255, (0, 0), 6)[..., None]
         palette = [(-45, -15, 30), (35, 5, -30), (-40, -40, -40), (-10, 25, 35)]  # BGR shifts
-        shift = np.array(palette[rng.integers(len(palette))], np.float32) * rng.uniform(0.8, 1.2)
+        shift = np.array(palette[rng.integers(len(palette))], np.float32) * rng.uniform(0.8, 1.2) * intensity
         img += soft * shift
         labels.append({"type": "discoloration", "bbox": _bbox(lbl_mask)})
 
@@ -116,15 +125,48 @@ def generate_sample(rng: np.random.Generator, defects: list[str]):
         if line.max() == 0:
             continue
         sign = -1 if rng.random() < 0.7 else 1  # most scratches read dark
-        img += (line.astype(np.float32) / 255)[..., None] * sign * rng.uniform(45, 80)
+        img += (line.astype(np.float32) / 255)[..., None] * sign * rng.uniform(45, 80) * intensity
         labels.append({"type": "scratch", "bbox": _bbox(line)})
+
+    # --- nuisances (acceptable, not defects) --------------------------------
+    nuisances = []
+    for _ in range(n_nuisance):
+        for _try in range(20):
+            cx, cy = random_inner_point()
+            if all(abs(cx - (b[0] + b[2] / 2)) > b[2] / 2 + 40 or abs(cy - (b[1] + b[3] / 2)) > b[3] / 2 + 40
+                   for b in [l["bbox"] for l in labels] + [nb["bbox"] for nb in nuisances]):
+                break
+        else:
+            continue
+        kind = ("dust", "glare", "toolmark")[rng.integers(3)]
+        layer = np.zeros((H, W), np.float32)
+        if kind == "dust":            # a few tiny dark specks
+            for _k in range(int(rng.integers(1, 4))):
+                o = rng.normal(0, 4, 2)
+                cv2.circle(layer, (int(cx + o[0]), int(cy + o[1])), int(rng.integers(1, 3)), 1.0, -1)
+            img += layer[..., None] * -rng.uniform(25, 50)
+        elif kind == "glare":         # soft, bright, colourless highlight
+            cv2.ellipse(layer, (cx, cy), (int(rng.integers(10, 22)), int(rng.integers(5, 12))),
+                        float(rng.uniform(0, 180)), 0, 360, 1.0, -1)
+            layer = cv2.GaussianBlur(layer, (0, 0), 5)
+            img += layer[..., None] * rng.uniform(25, 45)
+        else:                         # short, shallow machining mark
+            a = rng.uniform(0, np.pi)
+            L = rng.uniform(8, 16)
+            p0 = (int(cx - L / 2 * np.cos(a)), int(cy - L / 2 * np.sin(a)))
+            p1 = (int(cx + L / 2 * np.cos(a)), int(cy + L / 2 * np.sin(a)))
+            cv2.line(layer, p0, p1, 1.0, 1, cv2.LINE_AA)
+            img += layer[..., None] * -rng.uniform(20, 35)
+        ys_, xs_ = np.where(layer > 0.05)
+        nuisances.append({"type": kind, "bbox": [int(xs_.min()), int(ys_.min()),
+                                                 int(np.ptp(xs_) + 1), int(np.ptp(ys_) + 1)]})
 
     # --- composite on background -------------------------------------------
     bg = rng.uniform(25, 50) + rng.normal(0, 3, (H, W, 1))
     pm = part_mask
     for _ in range(defects.count("chip")):
         p, n = _boundary_point(rng, shape)
-        r = int(rng.integers(12, 28))
+        r = max(5, int(rng.integers(12, 28) * (0.4 + 0.6 * intensity)))
         c = p + n * rng.uniform(-0.3, 0.3) * r
         bite = np.zeros((H, W), np.uint8)
         # Irregular bite: a few overlapping circles = fractured look.
@@ -140,15 +182,19 @@ def generate_sample(rng: np.random.Generator, defects: list[str]):
     m = (cv2.GaussianBlur(pm, (3, 3), 0).astype(np.float32) / 255)[..., None]
     img = img * m + bg * (1 - m)
     img = cv2.GaussianBlur(img, (3, 3), 0) + rng.normal(0, 1.5, img.shape)
-    return np.clip(img, 0, 255).astype(np.uint8), labels
+    out = np.clip(img, 0, 255).astype(np.uint8)
+    return (out, labels, nuisances) if return_nuisances else (out, labels)
 
 
 def generate_dataset(out_dir: str | Path, n: int = 100, seed: int = 0,
-                     good_ratio: float = 0.3) -> Path:
+                     good_ratio: float = 0.3, min_intensity: float = 1.0,
+                     nuisance_rate: float = 0.0) -> Path:
+    """`nuisance_rate` = mean number of harmless look-alikes per image (Poisson).
+    Their locations go to nuisances.json (they are *not* defects)."""
     out = Path(out_dir)
     (out / "images").mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    all_labels = {}
+    all_labels, all_nuis = {}, {}
     for i in range(n):
         defects: list[str] = []
         if rng.random() >= good_ratio:
@@ -157,9 +203,14 @@ def generate_dataset(out_dir: str | Path, n: int = 100, seed: int = 0,
                     defects += [t] * int(rng.integers(1, 3))
             if not defects:
                 defects = [str(rng.choice(["scratch", "discoloration", "chip"]))]
-        img, labels = generate_sample(rng, defects)
+        intensity = 1.0 if min_intensity >= 1.0 else float(rng.uniform(min_intensity, 1.0))
+        n_nuis = int(rng.poisson(nuisance_rate)) if nuisance_rate > 0 else 0
+        img, labels, nuis = generate_sample(rng, defects, intensity, n_nuis, return_nuisances=True)
         name = f"part_{i:04d}.png"
         cv2.imwrite(str(out / "images" / name), img)
         all_labels[name] = labels
+        all_nuis[name] = nuis
     (out / "labels.json").write_text(json.dumps(all_labels, indent=1))
+    if nuisance_rate > 0:
+        (out / "nuisances.json").write_text(json.dumps(all_nuis, indent=1))
     return out

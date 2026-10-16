@@ -46,6 +46,11 @@ class InspectionConfig:
     chip_min_depth_ratio: float = 0.012
     chip_min_area_px: int = 40
 
+    # ---------------- ML verifier (only used with a trained model) ----------------
+    # A rule-based candidate is discarded if the model says "good" with at
+    # least this probability.
+    ml_reject_prob: float = 0.5
+
     # Which defect types are enabled.
     detect_scratch: bool = True
     detect_discoloration: bool = True

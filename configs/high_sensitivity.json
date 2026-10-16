@@ -1,0 +1,20 @@
+{
+  "min_part_area_ratio": 0.02,
+  "edge_margin_px": 8,
+  "scratch_kernel_px": 15,
+  "scratch_min_contrast": 12.0,
+  "scratch_sigma": 3.0,
+  "scratch_min_length_px": 18.0,
+  "scratch_min_elongation": 4.0,
+  "discolor_delta_e": 7.0,
+  "discolor_lightness_weight": 1.0,
+  "discolor_blur_px": 9,
+  "discolor_min_area_px": 80,
+  "chip_min_depth_px": 3.0,
+  "chip_min_depth_ratio": 0.006,
+  "chip_min_area_px": 40,
+  "ml_reject_prob": 0.5,
+  "detect_scratch": true,
+  "detect_discoloration": true,
+  "detect_chip": true
+}

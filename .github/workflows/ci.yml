@@ -21,7 +21,12 @@ jobs:
         run: |
           defect-inspect generate --n 100 --seed 2024 --out data/ci
           defect-inspect evaluate data/ci --out eval.json
+      - name: ML experiment smoke run (softmax + neural net)
+        run: defect-inspect train-ml data/ml --generate 120 --out ml-run
       - uses: actions/upload-artifact@v4
         with:
-          name: evaluation-report
-          path: eval.json
+          name: evaluation-report-py${{ matrix.python-version }}
+          path: |
+            eval.json
+            ml-run/report.json
+            ml-run/*.png

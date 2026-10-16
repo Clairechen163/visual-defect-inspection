@@ -33,9 +33,14 @@ def _prf(tp, fp, fn):
             "tp": tp, "fp": fp, "fn": fn}
 
 
-def evaluate(dataset_dir: str | Path, inspector: Inspector | None = None) -> dict:
+def evaluate(dataset_dir: str | Path, inspector: Inspector | None = None,
+             images: list[str] | None = None) -> dict:
+    """`images` restricts scoring to a subset (e.g. a held-out test split)."""
     root = Path(dataset_dir)
     labels = json.loads((root / "labels.json").read_text())
+    if images is not None:
+        keep = set(images)
+        labels = {k: v for k, v in labels.items() if k in keep}
     inspector = inspector or Inspector()
 
     # Image-level: "does this part have defect type X?"

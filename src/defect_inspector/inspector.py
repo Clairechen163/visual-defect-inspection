@@ -42,8 +42,33 @@ class InspectionResult:
 
 
 class Inspector:
-    def __init__(self, cfg: InspectionConfig | None = None):
+    """Rule-based detectors, optionally followed by an ML verifier.
+
+    With a `classifier` (``ml.PatchClassifier``), every candidate found by the
+    rules is cropped and classified; candidates the model calls "good" with
+    probability >= ``cfg.ml_reject_prob`` are discarded as false alarms. This
+    lets the rules run in a high-sensitivity mode while the model keeps
+    false rejects down.
+    """
+
+    def __init__(self, cfg: InspectionConfig | None = None, classifier=None):
         self.cfg = cfg or InspectionConfig()
+        self.classifier = classifier
+
+    def _verify(self, img, mask, defects: list[Defect]) -> list[Defect]:
+        from .ml.classifier import CLASSES
+        centers = [(int(d.bbox[0] + d.bbox[2] / 2), int(d.bbox[1] + d.bbox[3] / 2)) for d in defects]
+        probs = self.classifier.predict_proba_at(img, mask, centers)
+        kept = []
+        for d, p in zip(defects, probs):
+            k = int(p.argmax())
+            d.details["ml_label"] = CLASSES[k]
+            d.details["ml_confidence"] = float(p[k])
+            d.details["ml_p_good"] = float(p[0])
+            if CLASSES[k] == "good" and p[k] >= self.cfg.ml_reject_prob:
+                continue
+            kept.append(d)
+        return kept
 
     def inspect(self, img: np.ndarray, source: str = "") -> InspectionResult:
         t0 = time.perf_counter()
@@ -63,6 +88,8 @@ class Inspector:
             defects += detect_discoloration(img, mask, cfg, exclude=scratch_mask)
         if cfg.detect_chip:
             defects += detect_chips(mask, contour, cfg)
+        if self.classifier is not None and defects:
+            defects = self._verify(img, mask, defects)
 
         return InspectionResult("FAIL" if defects else "PASS", defects, contour,
                                 (time.perf_counter() - t0) * 1e3, source)

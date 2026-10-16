@@ -1,6 +1,46 @@
-# Visual Defect Inspection
+# Visual Defect Inspection: from computer vision to statistical decision-making
 
-Automated visual inspection for manufactured parts. Give it a photo of a part from your inspection station and it answers three questions:
+**Claire Chen** · end-to-end data science project in manufacturing quality control
+
+A factory has to decide, part by part, whether a component has a **scratch**, **discoloration** or a **chip**, and has to be right in a way that makes business sense. This project covers the full path: a computer-vision baseline, machine-learning models I implemented from scratch, statistically careful model comparison, a cost-based decision analysis, and process monitoring.
+
+📓 **Start here: [the analysis notebook](notebooks/analysis.ipynb)** walks through the whole study with code, figures and interpretation.
+
+## Project at a glance
+
+| | |
+|---|---|
+| **Problem** | Classify manufactured parts as PASS / FAIL and identify the defect type, balancing missed defects against scrapped good parts |
+| **Data** | Simulated images with known ground truth: faint defects plus realistic look-alikes (dust, glare, tool marks); 400 images → 2,980 labelled patches |
+| **Statistics** | Exploratory analysis, grouped train/test design (no leakage), cluster bootstrap CIs, McNemar's test, **repeated grouped cross-validation with the Nadeau–Bengio corrected t-test**, calibration (ECE), learning curves, **statistical process control (p-chart, Pareto)** |
+| **Machine learning** | **Softmax regression** and a **neural network** written from scratch in NumPy (backpropagation, Adam, dropout, L2, early stopping, class weights), verified by gradient checking |
+| **Business analysis** | ROC / PR curves, threshold chosen by **expected cost per part** at a realistic defect rate, saving with a bootstrap CI, and how the best policy changes with the cost of an escape |
+| **Engineering** | Installable Python package, command-line tool, 37 automated tests, GitHub Actions CI |
+
+## Key findings
+
+1. **Tuning the rules' thresholds alone can't solve the problem.** Default thresholds pass 19% of defective parts; sensitive thresholds reject 43% of good parts.
+2. **A learned verifier fixes the trade-off.** Sensitive rules followed by a neural-network check reach **96% accuracy with 0% good parts rejected** on held-out images.
+3. **The better-looking model wasn't significantly better.** On engineered features, the neural network seemed to beat softmax regression (naive p = 0.01), but the **corrected cross-validation test gives p = 0.13**. On raw pixels, the neural network's advantage is large and real (p < 10⁻⁵).
+4. **The decision is priced.** At a 5% defect rate, with an escape assumed to cost 20× a false reject, the verifier saves **$0.70 per part (95% CI $0.26–$1.23)** against the default rules. For safety-critical parts, where an escape costs a few hundred times more, catching everything becomes the cheaper policy.
+5. **Process monitoring.** A p-chart on the inspector's output detects a simulated tool-wear shift within 4 batches, and the Pareto chart points to scratches as the cause.
+
+![Decision analysis](docs/figures/decision_analysis.png)
+
+## What's in the repository
+
+| | |
+|---|---|
+| [`notebooks/analysis.ipynb`](notebooks/analysis.ipynb) | The full study: EDA → baseline → models → cross-validation → decision analysis → SPC |
+| [`docs/ML_REPORT.md`](docs/ML_REPORT.md) | Technical write-up of the machine-learning verifier (maths, design, limitations) |
+| [`src/defect_inspector/`](src/defect_inspector) | The package: computer-vision detectors, `ml/` (models, features, validation, decision analysis), `spc.py` |
+| [`tests/`](tests) | 37 tests, including gradient checks and statistical-method tests |
+
+---
+
+## How the inspector works
+
+Give it a photo of a part from your inspection station and it answers three questions:
 
 | Question | Defect | How it is found |
 |---|---|---|
@@ -12,7 +52,7 @@ Each image gets a **PASS / FAIL** verdict, a per-defect list with location, size
 
 ![Example results](docs/example_results.png)
 
-It is classical computer vision (OpenCV + NumPy): no GPU, no training data required, ~40 ms per 512×512 image on a CPU, and every decision is explainable and tunable from one config file.
+The core is classical computer vision (OpenCV + NumPy): no GPU, no training data required, ~40 ms per 512×512 image on a CPU, and every decision is explainable and tunable from one config file. An optional **machine-learning verifier** (softmax regression / neural network, implemented from scratch) can be added on top; see [below](#machine-learning-softmax-regression--neural-network-verifier).
 
 ---
 
@@ -86,6 +126,49 @@ Reproduce with `defect-inspect generate --n 200 --seed 7 --out data/s7 && defect
 
 ---
 
+## Machine learning: softmax regression & neural network verifier
+
+Rules force a trade-off: strict thresholds miss faint defects, sensitive thresholds reject parts with harmless dust or glare. The `ml` module adds a learned **second stage**. The rules run at high sensitivity, and a classifier checks every candidate (*good / scratch / discoloration / chip*) and discards the false alarms.
+
+Both models are written **from scratch in NumPy**. That includes softmax with cross-entropy, hand-written backpropagation, Adam, dropout, L2 regularisation, early stopping and class weighting. Both are checked against numerical gradients.
+
+| Experiment (held-out test data) | Result |
+|---|---|
+| Softmax regression · 18 statistical features | 97.6% accuracy, macro-F1 0.95 |
+| **Neural network · 18 statistical features** | **98.8% accuracy, macro-F1 0.98** |
+| Softmax regression · raw pixels | 85.4% accuracy, macro-F1 0.65 |
+| Neural network · raw pixels | 92.7% accuracy, macro-F1 0.82 |
+| Inspector, rules only → **high-sensitivity rules + neural net verifier** | PASS/FAIL accuracy 86% → **96%**, good parts rejected **0%** |
+
+![Inspector comparison](docs/ml/inspector_comparison.png)
+
+Evaluation is done with care for the statistics: the data is **split by image** to prevent leakage, **cluster-bootstrap 95% CIs** are reported, models are compared with **McNemar's exact test**, and **calibration error** is measured. The full write-up, with method, maths, figures and limitations, is in **[docs/ML_REPORT.md](docs/ML_REPORT.md)**.
+
+```bash
+# Reproduce the whole experiment (~1 min on a laptop CPU)
+defect-inspect train-ml data/hard --generate 400 --out models/run
+
+# Re-run the full analysis notebook (~7 min)
+jupyter nbconvert --to notebook --execute --inplace notebooks/analysis.ipynb
+
+# Use the shipped verifier
+defect-inspect inspect images/ --config configs/high_sensitivity.json --model models/mlp_features.npz
+```
+
+```python
+from defect_inspector import Inspector, InspectionConfig, load_image
+from defect_inspector.ml import PatchClassifier
+
+inspector = Inspector(InspectionConfig.from_json("configs/high_sensitivity.json"),
+                      classifier=PatchClassifier.load("models/mlp_features.npz"))
+for d in inspector.inspect(load_image("part.jpg")).defects:
+    print(d.type, d.details["ml_label"], d.details["ml_confidence"])
+```
+
+`defect-inspect generate` takes `--min-intensity 0.25` for faint defects and `--nuisance-rate 2` for dust, glare and tool marks, which together give a harder, more realistic dataset.
+
+---
+
 ## Using it on your real parts
 
 ### 1. Imaging setup (matters more than the code)
@@ -143,7 +226,25 @@ src/defect_inspector/
   synth.py        synthetic labelled data generator
   evaluate.py     precision / recall / escape-rate scoring
   cli.py          `defect-inspect` command
-tests/            pytest suite (runs on synthetic data)
+  spc.py          statistical process control (p-chart) on inspector output
+  ml/
+    softmax.py    softmax regression (from scratch)
+    mlp.py        neural network with hand-written backprop
+    optim.py      softmax, cross-entropy, Adam
+    features.py   18 interpretable patch statistics / raw-pixel input
+    dataset.py    labelled patch extraction, split by image
+    metrics.py    confusion matrix, bootstrap CI, McNemar, calibration
+    classifier.py trained model + preprocessing, plugs into Inspector
+    train.py      full experiment (`defect-inspect train-ml`)
+    validation.py repeated grouped CV, corrected t-test, learning curves
+    decision.py   ROC/PR, expected-cost threshold, bootstrap savings
+    plots.py      report figures
+models/           trained verifiers (softmax + neural net on features)
+configs/          high_sensitivity.json for use with a verifier
+docs/ML_REPORT.md machine-learning write-up
+docs/figures/     figures produced by the notebook
+notebooks/        analysis.ipynb (+ build_notebook.py that generates it)
+tests/            pytest suite incl. gradient checks (runs on synthetic data)
 .github/workflows CI: tests + accuracy benchmark
 ```
 
@@ -152,7 +253,7 @@ tests/            pytest suite (runs on synthetic data)
 - **Chip detection assumes the part outline is convex** (discs, rectangles, rings, plates). Parts with designed-in notches or slots would need a golden-template comparison mode: register the part to a reference mask and flag missing area. This is the natural next feature.
 - **One part per image.** Multi-part trays would need a loop over each blob in `segment_part`.
 - **Interior holes** (washers) are filled during segmentation; inner-edge chips are not checked yet.
-- **Highly textured or reflective surfaces** (cast, knurled, mirror-polished) may need an anomaly-detection model instead of thresholds. The `Inspector` interface is designed so a learned detector (e.g. PatchCore / YOLO trained on your labelled set) can be added alongside the classical ones.
+- **Highly textured or reflective surfaces** (cast, knurled, mirror-polished) may need more learning. Next steps are a CNN on full-resolution patches and unsupervised anomaly detection trained on good parts only (see [ML_REPORT.md §8](docs/ML_REPORT.md#8-next-steps)).
 
 ## License
 
