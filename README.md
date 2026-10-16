@@ -8,7 +8,7 @@ A factory has to decide, part by part, whether a component has a **scratch**, **
 
 ## Project at a glance
 
-| | |
+| Area | Details |
 |---|---|
 | **Problem** | Classify manufactured parts as PASS / FAIL and identify the defect type, balancing missed defects against scrapped good parts |
 | **Data** | Simulated images with known ground truth: faint defects plus realistic look-alikes (dust, glare, tool marks); 400 images → 2,980 labelled patches |
@@ -29,7 +29,7 @@ A factory has to decide, part by part, whether a component has a **scratch**, **
 
 ## What's in the repository
 
-| | |
+| File | Contents |
 |---|---|
 | [`notebooks/analysis.ipynb`](notebooks/analysis.ipynb) | The full study: EDA → baseline → models → cross-validation → decision analysis → SPC |
 | [`docs/ML_REPORT.md`](docs/ML_REPORT.md) | Technical write-up of the machine-learning verifier (maths, design, limitations) |
